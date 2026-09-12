@@ -44,7 +44,7 @@ class Attempt(BaseModel):
     test_id: str
     user_id: str
     attempt_number: int = Field(ge=1)
-    status: Literal["in_progress", "graded", "failed"]
+    status: Literal["in_progress", "grading", "graded", "failed"]
     started_at: datetime
     graded_at: datetime | None = None
     error: str | None = None

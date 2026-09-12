@@ -20,8 +20,6 @@ from app.dto import (
 )
 from app.service import (
     GradingService,
-    IncompleteAttemptError,
-    LLMScoreScaleError,
     RubricNotAssignedError,
     UnknownQuestionError,
 )
@@ -65,6 +63,18 @@ def make_grading_store() -> PostgresGradingRepository:
     repository = PostgresGradingRepository(engine=engine)
     repository.initialize()
     return repository
+
+
+async def submit_and_wait(service, test_id, attempt_id, user_id, request):
+    """grade_attempt now returns as soon as responses are saved, before the
+    background LLM grading task finishes. Tests need the final result, so
+    this awaits that task (tracked in service._grading_tasks) before
+    fetching it via get_attempt_result."""
+    await service.grade_attempt(test_id, attempt_id, user_id, request)
+    task = service._grading_tasks.get(attempt_id)
+    if task is not None:
+        await task
+    return await service.get_attempt_result(test_id, attempt_id, user_id)
 
 
 def make_service(*, wrong_scale: bool = False):
@@ -116,7 +126,8 @@ def test_multi_question_attempt_is_graded_and_persisted() -> None:
     attempt = asyncio.run(service.create_attempt(test.id, "student-1"))
 
     response = asyncio.run(
-        service.grade_attempt(
+        submit_and_wait(
+            service,
             test.id,
             attempt.id,
             "student-1",
@@ -150,7 +161,8 @@ def test_single_question_calls_can_share_one_attempt_before_finalization() -> No
     attempt = asyncio.run(service.create_attempt(test.id, "student-1"))
 
     partial = asyncio.run(
-        service.grade_attempt(
+        submit_and_wait(
+            service,
             test.id,
             attempt.id,
             "student-1",
@@ -166,7 +178,8 @@ def test_single_question_calls_can_share_one_attempt_before_finalization() -> No
         )
     )
     final = asyncio.run(
-        service.grade_attempt(
+        submit_and_wait(
+            service,
             test.id,
             attempt.id,
             "student-1",
@@ -193,23 +206,26 @@ def test_attempt_cannot_finalize_with_missing_questions() -> None:
     question1, question2 = test.questions
     attempt = asyncio.run(service.create_attempt(test.id, "student-1"))
 
-    with pytest.raises(IncompleteAttemptError, match=re.escape(question2.id)):
-        asyncio.run(
-            service.grade_attempt(
-                test.id,
-                attempt.id,
-                "student-1",
-                GradeAttemptRequest(
-                    responses=[
-                        QuestionResponseSubmission(
-                            question_id=question1.id,
-                            answer="Only one response.",
-                        )
-                    ],
-                    finalize=True,
-                ),
-            )
+    result = asyncio.run(
+        submit_and_wait(
+            service,
+            test.id,
+            attempt.id,
+            "student-1",
+            GradeAttemptRequest(
+                responses=[
+                    QuestionResponseSubmission(
+                        question_id=question1.id,
+                        answer="Only one response.",
+                    )
+                ],
+                finalize=True,
+            ),
         )
+    )
+
+    assert result.attempt.status == "failed"
+    assert question2.id in (result.attempt.error or "")
 
 
 def test_attempt_ownership_is_enforced() -> None:
@@ -352,22 +368,24 @@ def test_llm_cannot_change_question_score_scale() -> None:
     question1 = test.questions[0]
     attempt = asyncio.run(service.create_attempt(test.id, "student-1"))
 
-    with pytest.raises(LLMScoreScaleError, match="allows at most 10"):
-        asyncio.run(
-            service.grade_attempt(
-                test.id,
-                attempt.id,
-                "student-1",
-                GradeAttemptRequest(
-                    responses=[
-                        QuestionResponseSubmission(
-                            question_id=question1.id,
-                            answer="Response.",
-                        )
-                    ],
-                    finalize=False,
-                ),
-            )
+    result = asyncio.run(
+        submit_and_wait(
+            service,
+            test.id,
+            attempt.id,
+            "student-1",
+            GradeAttemptRequest(
+                responses=[
+                    QuestionResponseSubmission(
+                        question_id=question1.id,
+                        answer="Response.",
+                    )
+                ],
+                finalize=False,
+            ),
         )
+    )
 
+    assert result.attempt.status == "failed"
+    assert "allows at most 10" in (result.attempt.error or "")
     assert grading_store.get_attempt(attempt.id).status == "failed"

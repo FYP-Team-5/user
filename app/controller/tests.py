@@ -25,11 +25,6 @@ from app.service import (
     AttemptService,
     CatalogService,
     CsvFormatError,
-    IncompleteAttemptError,
-    LLMCriteriaMismatchError,
-    LLMResponseError,
-    LLMScoreScaleError,
-    LLMServiceError,
     RubricNotAssignedError,
     StudentAnswerTooLargeError,
     UnknownQuestionError,
@@ -136,7 +131,7 @@ async def list_attempts(
 
 @tests_router.post(
     "/{test_id}/attempts/{attempt_id}/grade",
-    response_model=AttemptGradeResponse,
+    response_model=Attempt,
     tags=["grading"],
 )
 async def grade_attempt(
@@ -145,7 +140,11 @@ async def grade_attempt(
     body: GradeAttemptRequest,
     user_id: Annotated[str, Depends(require_user_id)],
     service: Annotated[AttemptService, Depends(get_attempt_service)],
-) -> AttemptGradeResponse:
+) -> Attempt:
+    """Saves the submitted answers and starts grading in the background.
+    Poll GET .../attempts/{attempt_id} for the graded result — LLM grading
+    happens per-question and isn't done by the time this returns.
+    """
     try:
         return await service.grade_attempt(test_id, attempt_id, user_id, body)
     except GradingRecordNotFoundError as exc:
@@ -158,16 +157,6 @@ async def grade_attempt(
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except UnknownQuestionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except (LLMResponseError, LLMScoreScaleError, LLMCriteriaMismatchError) as exc:
-        raise HTTPException(
-            status_code=502, detail="LLM returned an invalid grade."
-        ) from exc
-    except IncompleteAttemptError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except LLMServiceError as exc:
-        raise HTTPException(
-            status_code=502, detail="LLM grading request failed."
-        ) from exc
     except GradingStoreError as exc:
         raise HTTPException(status_code=502, detail="Grading database failed.") from exc
 

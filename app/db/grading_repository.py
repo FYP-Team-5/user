@@ -565,6 +565,17 @@ class PostgresGradingRepository:
             raise GradingRecordNotFoundError(attempt_id)
         return self.get_attempt(attempt_id)
 
+    def mark_attempt_grading(self, attempt_id: str) -> Attempt:
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(attempts)
+                .where(attempts.c.id == attempt_id)
+                .values(status="grading", error=None)
+            )
+        if result.rowcount == 0:
+            raise GradingRecordNotFoundError(attempt_id)
+        return self.get_attempt(attempt_id)
+
     def mark_attempt_in_progress(self, attempt_id: str) -> None:
         with self.engine.begin() as connection:
             result = connection.execute(

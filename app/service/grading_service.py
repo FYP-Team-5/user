@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from app.config import Settings
 from app.db import AttemptStateError, PostgresGradingRepository
@@ -30,6 +31,8 @@ Return JSON only with this exact shape:
 Every criteria_id in the supplied criteria list must appear exactly once in criteria_met.
 The score must be non-negative and cannot exceed max_score.
 """
+
+logger = logging.getLogger(__name__)
 
 
 class StudentAnswerTooLargeError(ValueError):
@@ -77,11 +80,16 @@ class GradingService:
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
         )
+        self._grading_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self.grading_store.initialize)
 
     async def close(self) -> None:
+        if self._grading_tasks:
+            await asyncio.gather(
+                *list(self._grading_tasks.values()), return_exceptions=True
+            )
         await asyncio.gather(
             asyncio.to_thread(self.grading_store.close),
             self.llm.close(),
@@ -177,13 +185,21 @@ class GradingService:
         attempt_id: str,
         user_id: str,
         request: GradeAttemptRequest,
-    ) -> AttemptGradeResponse:
+    ) -> Attempt:
+        """Saves the submitted answers and starts grading them in the
+        background. Returns immediately with the attempt in "grading" status
+        — poll get_attempt_result for the outcome instead of waiting here,
+        since each answer requires its own LLM round-trip.
+        """
         attempt = await asyncio.to_thread(self.grading_store.get_attempt, attempt_id)
         self._validate_attempt(attempt, test_id, user_id)
+        existing_task = self._grading_tasks.get(attempt_id)
+        if existing_task is not None and not existing_task.done():
+            raise AttemptStateError("This attempt is already being graded.")
         test = await self.get_test(test_id)
         questions_by_id = {question.id: question for question in test.questions}
 
-        await asyncio.to_thread(self.grading_store.mark_attempt_in_progress, attempt_id)
+        to_grade: list[tuple[str, Question, str]] = []
         for submission in request.responses:
             question = questions_by_id.get(submission.question_id)
             if question is None:
@@ -201,6 +217,36 @@ class GradingService:
                 question.id,
                 answer,
             )
+            to_grade.append((response_id, question, answer))
+
+        attempt = await asyncio.to_thread(
+            self.grading_store.mark_attempt_grading, attempt_id
+        )
+        task = asyncio.create_task(
+            self._grade_in_background(
+                test, attempt_id, to_grade, finalize=request.finalize
+            ),
+            name=f"grade-attempt-{attempt_id}",
+        )
+        self._grading_tasks[attempt_id] = task
+        task.add_done_callback(
+            lambda done_task, aid=attempt_id: self._forget_grading_task(aid, done_task)
+        )
+        return attempt
+
+    async def _grade_in_background(
+        self,
+        test: Test,
+        attempt_id: str,
+        to_grade: list[tuple[str, Question, str]],
+        *,
+        finalize: bool,
+    ) -> None:
+        # Grades every submitted answer even if one fails, so a single flaky
+        # LLM call doesn't discard grades already earned on other questions
+        # in the same submission.
+        had_failure = False
+        for response_id, question, answer in to_grade:
             try:
                 result = await self.llm.grade(
                     system_prompt=SYSTEM_PROMPT,
@@ -228,35 +274,44 @@ class GradingService:
                         for item in result.criteria_met
                     ],
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - LLM/validation failures must not crash the task
+                had_failure = True
+                logger.error(
+                    "Grading failed for question %s on attempt %s: %s",
+                    question.id,
+                    attempt_id,
+                    exc,
+                )
                 await asyncio.to_thread(
                     self.grading_store.mark_attempt_failed,
                     attempt_id,
-                    f"{type(exc).__name__}: {exc}",
+                    f"Question '{question.id}': {type(exc).__name__}: {exc}",
                 )
-                raise
 
+        if had_failure:
+            return
+        if not finalize:
+            await asyncio.to_thread(
+                self.grading_store.mark_attempt_in_progress, attempt_id
+            )
+            return
         responses = await asyncio.to_thread(self.grading_store.list_responses, attempt_id)
-        if request.finalize:
-            graded_ids = {response.question_id for response in responses}
-            missing = [
-                question.id
-                for question in test.questions
-                if question.id not in graded_ids
-            ]
-            if missing:
-                raise IncompleteAttemptError(
-                    f"Cannot finalize attempt; ungraded question(s): {missing}."
-                )
-            attempt = await asyncio.to_thread(
-                self.grading_store.mark_attempt_graded,
+        graded_ids = {response.question_id for response in responses}
+        missing = [
+            question.id for question in test.questions if question.id not in graded_ids
+        ]
+        if missing:
+            await asyncio.to_thread(
+                self.grading_store.mark_attempt_failed,
                 attempt_id,
+                f"Cannot finalize attempt; ungraded question(s): {missing}.",
             )
-        else:
-            attempt = await asyncio.to_thread(
-                self.grading_store.get_attempt, attempt_id
-            )
-        return self._attempt_response(test, attempt, responses)
+            return
+        await asyncio.to_thread(self.grading_store.mark_attempt_graded, attempt_id)
+
+    def _forget_grading_task(self, attempt_id: str, task: asyncio.Task[None]) -> None:
+        if self._grading_tasks.get(attempt_id) is task:
+            self._grading_tasks.pop(attempt_id, None)
 
     async def get_attempt_result(
         self,
