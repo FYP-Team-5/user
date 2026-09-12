@@ -14,11 +14,14 @@ class CriteriaCreate(BaseModel):
 
 class RubricCreate(BaseModel):
     criteria: list[CriteriaCreate] = Field(min_length=1, max_length=100)
+    model_answer: str | None = Field(default=None, max_length=10_000)
 
 class QuestionCreate(BaseModel):
+    external_id: str | None = Field(default=None, pattern=ID_PATTERN)
     prompt: str = Field(min_length=1, max_length=10_000)
     max_score: float = Field(gt=0)
     score_increment: float = Field(gt=0)
+    model_answer: str | None = Field(default=None, max_length=10_000)
     rubric: RubricCreate | None = None
 
 class TestCreate(BaseModel):

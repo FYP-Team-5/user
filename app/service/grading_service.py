@@ -12,6 +12,7 @@ from app.dto import (
     TestCreate,
 )
 from app.model import Attempt, Course, Question, Response, Test
+from app.service.csv_import import parse_criteria_csv, parse_questions_csv
 from app.service.llm_client import LocalLLMClient
 
 SYSTEM_PROMPT = """You are a strict and fair assessment grader.
@@ -113,6 +114,39 @@ class GradingService:
 
     async def list_tests(self, course_id: str) -> list[Test]:
         return await asyncio.to_thread(self.grading_store.list_tests, course_id)
+
+    async def create_test_from_csv(
+        self,
+        course_id: str,
+        test_name: str,
+        max_attempts: int,
+        csv_content: str,
+    ) -> Test:
+        questions = parse_questions_csv(csv_content)
+        request = TestCreate(
+            test_name=test_name,
+            max_attempts=max_attempts,
+            questions=questions,
+        )
+        return await self.create_test(course_id, request)
+
+    async def upload_criteria_csv(self, test_id: str, csv_content: str) -> Test:
+        rubrics_by_external_id = parse_criteria_csv(csv_content)
+        test = await self.get_test(test_id)
+        question_by_external_id = {
+            question.external_id: question
+            for question in test.questions
+            if question.external_id is not None
+        }
+        unknown = set(rubrics_by_external_id) - set(question_by_external_id)
+        if unknown:
+            raise UnknownQuestionError(
+                f"Criteria CSV references unknown question id(s): {sorted(unknown)}."
+            )
+        for external_id, rubric in rubrics_by_external_id.items():
+            question = question_by_external_id[external_id]
+            await self.set_question_rubric(test_id, question.id, rubric)
+        return await self.get_test(test_id)
 
     async def get_test(self, test_id: str) -> Test:
         return await asyncio.to_thread(self.grading_store.get_test, test_id)

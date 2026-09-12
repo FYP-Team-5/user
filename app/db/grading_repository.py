@@ -78,12 +78,15 @@ questions = Table(
     grading_metadata,
     Column("id", String(128), primary_key=True),
     Column("test_id", ForeignKey("grading_tests.id"), nullable=False, index=True),
+    Column("external_id", String(128), nullable=True),
     Column("position", Integer, nullable=False),
     Column("prompt", Text, nullable=False),
     Column("max_score", Float, nullable=False),
     Column("score_increment", Float, nullable=False),
+    Column("model_answer", Text, nullable=True),
     Column("rubric_id", ForeignKey("grading_rubrics.id"), nullable=True, unique=True),
     UniqueConstraint("test_id", "position", name="uq_grading_question_position"),
+    UniqueConstraint("test_id", "external_id", name="uq_grading_question_external_id"),
 )
 
 attempts = Table(
@@ -265,10 +268,12 @@ class PostgresGradingRepository:
                         {
                             "id": str(uuid.uuid4()),
                             "test_id": test_id,
+                            "external_id": question.external_id,
                             "position": position,
                             "prompt": question.prompt,
                             "max_score": question.max_score,
                             "score_increment": question.score_increment,
+                            "model_answer": question.model_answer,
                             "rubric_id": rubric_id,
                         }
                         for position, (rubric_id, question) in enumerate(
@@ -311,10 +316,13 @@ class PostgresGradingRepository:
                         for item in request.criteria
                     ],
                 )
+                update_values = {"rubric_id": new_rubric_id}
+                if request.model_answer is not None:
+                    update_values["model_answer"] = request.model_answer
                 connection.execute(
                     update(questions)
                     .where(questions.c.id == question_id)
-                    .values(rubric_id=new_rubric_id)
+                    .values(**update_values)
                 )
                 if old_rubric_id is not None:
                     connection.execute(

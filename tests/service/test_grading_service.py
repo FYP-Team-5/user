@@ -281,6 +281,72 @@ def test_grading_rejects_question_outside_the_test() -> None:
         )
 
 
+def test_create_test_from_csv_creates_questions_with_external_ids() -> None:
+    service, _, _, _ = make_service()
+    course = asyncio.run(
+        service.create_course(CourseCreate(course_code="CS-101", course_name="Intro CS"))
+    )
+    csv_content = (
+        "id,prompt,max_score,score_increment\n"
+        "1.1,What is the role of a prototype program?,1,1\n"
+        "1.2,Why prototype early?,2,1\n"
+    )
+
+    test = asyncio.run(
+        service.create_test_from_csv(course.id, "Quiz 1", 1, csv_content)
+    )
+
+    assert [question.external_id for question in test.questions] == ["1.1", "1.2"]
+    assert all(question.rubric is None for question in test.questions)
+
+
+def test_upload_criteria_csv_attaches_rubric_and_model_answer_by_join_key() -> None:
+    service, _, _, _ = make_service()
+    course = asyncio.run(
+        service.create_course(CourseCreate(course_code="CS-101", course_name="Intro CS"))
+    )
+    test = asyncio.run(
+        service.create_test_from_csv(
+            course.id,
+            "Quiz 1",
+            1,
+            "id,prompt,max_score,score_increment\n"
+            "1.1,What is the role of a prototype program?,1,1\n",
+        )
+    )
+    criteria_csv = (
+        "id,criteria,criteria_max_score,model_answer\n"
+        "1.1,Mentions simulating behaviour,1,To simulate the behaviour of the product.\n"
+    )
+
+    updated_test = asyncio.run(service.upload_criteria_csv(test.id, criteria_csv))
+
+    question = updated_test.questions[0]
+    assert question.model_answer == "To simulate the behaviour of the product."
+    assert [item.description for item in question.rubric.criteria] == [
+        "Mentions simulating behaviour"
+    ]
+
+
+def test_upload_criteria_csv_rejects_unknown_question_id() -> None:
+    service, _, _, _ = make_service()
+    course = asyncio.run(
+        service.create_course(CourseCreate(course_code="CS-101", course_name="Intro CS"))
+    )
+    test = asyncio.run(
+        service.create_test_from_csv(
+            course.id,
+            "Quiz 1",
+            1,
+            "id,prompt,max_score,score_increment\n1.1,Question one,1,1\n",
+        )
+    )
+    criteria_csv = "id,criteria,criteria_max_score\n9.9,Some criterion,1\n"
+
+    with pytest.raises(UnknownQuestionError, match="9.9"):
+        asyncio.run(service.upload_criteria_csv(test.id, criteria_csv))
+
+
 def test_llm_cannot_change_question_score_scale() -> None:
     service, grading_store, _, test = make_service(wrong_scale=True)
     question1 = test.questions[0]

@@ -1,7 +1,11 @@
 import pytest
 from sqlalchemy import create_engine
 
-from app.db import AttemptLimitExceededError, PostgresGradingRepository
+from app.db import (
+    AttemptLimitExceededError,
+    GradingConflictError,
+    PostgresGradingRepository,
+)
 from app.dto import CriteriaCreate, QuestionCreate, RubricCreate, TestCreate
 
 
@@ -157,6 +161,90 @@ def test_setting_a_new_rubric_replaces_the_old_one() -> None:
     assert [item.description for item in updated_question.rubric.criteria] == [
         "Replacement criterion"
     ]
+
+
+def test_question_external_id_and_model_answer_round_trip() -> None:
+    repository = make_repository()
+    course = repository.create_course("HIST-101", "History")
+    request = TestCreate(
+        test_name="History midterm",
+        max_attempts=1,
+        questions=[
+            QuestionCreate(
+                external_id="1.1",
+                prompt="Explain the primary cause.",
+                max_score=10,
+                score_increment=0.5,
+            ),
+        ],
+    )
+
+    test = repository.create_test(course.id, request)
+    assert test.questions[0].external_id == "1.1"
+    assert test.questions[0].model_answer is None
+
+    updated_question = repository.set_question_rubric(
+        test.id,
+        test.questions[0].id,
+        RubricCreate(
+            criteria=[CriteriaCreate(description="Accuracy", score=10)],
+            model_answer="The primary cause was economic pressure.",
+        ),
+    )
+
+    assert updated_question.model_answer == "The primary cause was economic pressure."
+    refetched = repository.get_test(test.id)
+    assert refetched.questions[0].external_id == "1.1"
+    assert refetched.questions[0].model_answer == "The primary cause was economic pressure."
+
+
+def test_setting_rubric_without_model_answer_keeps_the_existing_one() -> None:
+    repository = make_repository()
+    course = repository.create_course("HIST-101", "History")
+    test = repository.create_test(
+        course.id,
+        TestCreate(
+            test_name="History midterm",
+            max_attempts=1,
+            questions=[
+                QuestionCreate(
+                    external_id="1.1",
+                    prompt="Explain the primary cause.",
+                    max_score=10,
+                    score_increment=0.5,
+                    model_answer="Original model answer.",
+                ),
+            ],
+        ),
+    )
+
+    updated_question = repository.set_question_rubric(
+        test.id,
+        test.questions[0].id,
+        RubricCreate(criteria=[CriteriaCreate(description="Accuracy", score=10)]),
+    )
+
+    assert updated_question.model_answer == "Original model answer."
+
+
+def test_external_id_must_be_unique_within_a_test() -> None:
+    repository = make_repository()
+    course = repository.create_course("HIST-101", "History")
+    request = TestCreate(
+        test_name="History midterm",
+        max_attempts=1,
+        questions=[
+            QuestionCreate(
+                external_id="1.1", prompt="First.", max_score=10, score_increment=0.5
+            ),
+            QuestionCreate(
+                external_id="1.1", prompt="Second.", max_score=10, score_increment=0.5
+            ),
+        ],
+    )
+
+    with pytest.raises(GradingConflictError):
+        repository.create_test(course.id, request)
 
 
 def test_catalog_lists_courses_tests_and_attempts() -> None:

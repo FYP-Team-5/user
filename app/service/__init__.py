@@ -1,6 +1,7 @@
 from app.service.attempt_service import AttemptService
 from app.service.auth_service import AuthService
 from app.service.catalog_service import CatalogService
+from app.service.csv_import import CsvFormatError
 from app.service.grading_service import (
     GradingService,
     IncompleteAttemptError,
@@ -26,6 +27,7 @@ __all__ = [
     "AuthenticationError",
     "AuthorizationError",
     "CatalogService",
+    "CsvFormatError",
     "GradingService",
     "IdentityService",
     "IncompleteAttemptError",

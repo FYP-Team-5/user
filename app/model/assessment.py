@@ -23,9 +23,11 @@ class Rubric(BaseModel):
 class Question(BaseModel):
     id: str
     test_id: str
+    external_id: str | None = None
     prompt: str
     max_score: float = Field(gt=0)
     score_increment: float = Field(gt=0)
+    model_answer: str | None = None
     rubric: Rubric | None = None
     position: int = Field(ge=0)
 

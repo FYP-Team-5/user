@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile
 
 from app.controller.dependencies import (
     ID_PATTERN,
@@ -24,6 +24,7 @@ from app.model import Attempt, Question, Test
 from app.service import (
     AttemptService,
     CatalogService,
+    CsvFormatError,
     IncompleteAttemptError,
     LLMCriteriaMismatchError,
     LLMResponseError,
@@ -59,6 +60,33 @@ async def set_question_rubric(
 ) -> Question:
     try:
         return await service.set_question_rubric(test_id, question_id, body)
+    except GradingRecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Test or question not found.") from exc
+    except GradingConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GradingStoreError as exc:
+        raise HTTPException(status_code=502, detail="Grading database failed.") from exc
+
+
+@tests_router.post(
+    "/{test_id}/criteria/csv",
+    response_model=Test,
+)
+async def upload_criteria_csv(
+    test_id: Annotated[str, Path(pattern=ID_PATTERN.pattern)],
+    service: Annotated[CatalogService, Depends(get_catalog_service)],
+    file: Annotated[UploadFile, File()],
+) -> Test:
+    try:
+        content = (await file.read()).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="CSV file must be UTF-8 encoded.") from exc
+    try:
+        return await service.upload_criteria_csv(test_id, content)
+    except CsvFormatError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except UnknownQuestionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except GradingRecordNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Test or question not found.") from exc
     except GradingConflictError as exc:

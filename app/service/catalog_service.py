@@ -9,9 +9,11 @@ class CatalogService:
             "create_course",
             "list_courses",
             "create_test",
+            "create_test_from_csv",
             "list_tests",
             "get_test",
             "set_question_rubric",
+            "upload_criteria_csv",
         }:
             return getattr(self.core, name)
         raise AttributeError(name)
