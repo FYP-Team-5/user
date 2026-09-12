@@ -22,6 +22,19 @@ def test_parse_questions_csv_builds_one_question_per_row() -> None:
     assert questions[1].score_increment == 0.5
 
 
+def test_parse_questions_csv_reads_optional_model_answer() -> None:
+    content = (
+        "id,prompt,max_score,score_increment,model_answer\n"
+        "1.1,What is a prototype?,10,1,A simulation of the product.\n"
+        "1.2,Why prototype?,5,0.5,\n"
+    )
+
+    questions = parse_questions_csv(content)
+
+    assert questions[0].model_answer == "A simulation of the product."
+    assert questions[1].model_answer is None
+
+
 def test_parse_questions_csv_rejects_missing_column() -> None:
     content = "id,prompt,max_score\n1.1,What is a prototype?,10\n"
 

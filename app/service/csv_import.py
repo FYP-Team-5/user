@@ -41,9 +41,11 @@ def _required_float(row: dict, column: str, line_number: int) -> float:
 def parse_questions_csv(content: str) -> list[QuestionCreate]:
     """Parse an instructor-uploaded questions CSV.
 
-    Expected columns: id, prompt, max_score, score_increment.
-    'id' is the stable external identifier later joined against the
-    criteria CSV — it is never matched by text or row position.
+    Expected columns: id, prompt, max_score, score_increment, and an
+    optional model_answer. 'id' is the stable external identifier later
+    joined against the criteria CSV — it is never matched by text or row
+    position. A model_answer set here is only a starting value; uploading a
+    criteria CSV with its own model_answer for the same id overwrites it.
     """
     reader = _read_rows(content, QUESTION_COLUMNS, "Questions")
     questions: list[QuestionCreate] = []
@@ -59,6 +61,7 @@ def parse_questions_csv(content: str) -> list[QuestionCreate]:
                 prompt=_required_field(row, "prompt", line_number),
                 max_score=_required_float(row, "max_score", line_number),
                 score_increment=_required_float(row, "score_increment", line_number),
+                model_answer=(row.get("model_answer") or "").strip() or None,
             )
         )
     if not questions:
